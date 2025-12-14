@@ -46,7 +46,8 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
 
     public static void connectWhileGranted(boolean granted) {
         if (granted) {
-            vpnHelper.startVPN(config, username, password, name, bypassPackages);
+            // or add ininitialize method
+            // vpnHelper.startVPN(config, username, password, name, bypassPackages);
         }
     }
 
