@@ -18,12 +18,12 @@ import io.flutter.embedding.engine.plugins.activity.ActivityAware;
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding;
 import io.flutter.plugin.common.EventChannel;
 import io.flutter.plugin.common.MethodChannel;
+import io.flutter.plugin.common.PluginRegistry;
 
 /**
  * OpenvpnFlutterPlugin
  */
 public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
-
     private MethodChannel vpnControlMethod;
     private EventChannel vpnStageEvent;
     //    private EventChannel vpnStatusEvent;
@@ -40,14 +40,21 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
     @SuppressLint("StaticFieldLeak")
     private static VPNHelper vpnHelper;
     private Activity activity;
+    private ActivityPluginBinding activityBinding;
+    private MethodChannel.Result pendingPermissionResult;
+    private final PluginRegistry.ActivityResultListener activityResultListener = this::onActivityResult;
 
     Context mContext;
 
 
     public static void connectWhileGranted(boolean granted) {
-        if (granted) {
-            // or add ininitialize method
-            // vpnHelper.startVPN(config, username, password, name, bypassPackages);
+        // Permission grant alone must not start VPN. The Dart side starts VPN
+        // explicitly after request_permission returns true.
+    }
+
+    private static void notifyStage(String stage) {
+        if (VPNHelper.listener != null) {
+            VPNHelper.listener.onVPNStatusChanged(stage);
         }
     }
 
@@ -94,8 +101,10 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
                     result.success(updateVPNStages());
                     break;
                 case "disconnect":
-                    if (vpnHelper == null)
+                    if (vpnHelper == null) {
                         result.error("-1", "VPNEngine need to be initialize", "");
+                        return;
+                    }
 
                     vpnHelper.stopVPN();
                     updateStage("disconnected");
@@ -119,7 +128,7 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
 
                     final Intent permission = VpnService.prepare(activity);
                     if (permission != null) {
-                        activity.startActivityForResult(permission, 24);
+                        result.error("-3", "OpenVPN permission is required before connect", "");
                         return;
                     }
                     vpnHelper.startVPN(config, username, password, name, bypassPackages);
@@ -134,8 +143,12 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
                 case "request_permission":
                     final Intent request = VpnService.prepare(activity);
                     if (request != null) {
+                        if (pendingPermissionResult != null) {
+                            result.error("-4", "OpenVPN permission request is already running", "");
+                            return;
+                        }
+                        pendingPermissionResult = result;
                         activity.startActivityForResult(request, 24);
-                        result.success(false);
                         return;
                     }
                     result.success(true);
@@ -150,6 +163,24 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
     public void updateStage(String stage) {
         if (stage == null) stage = "idle";
         if (vpnStageSink != null) vpnStageSink.success(stage.toLowerCase());
+    }
+
+    private boolean onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode != 24) {
+            return false;
+        }
+
+        final boolean granted = resultCode == Activity.RESULT_OK;
+        final MethodChannel.Result result = pendingPermissionResult;
+        pendingPermissionResult = null;
+
+        if (result != null) {
+            result.success(granted);
+        }
+        if (!granted) {
+            notifyStage("denied");
+        }
+        return true;
     }
 
 
@@ -171,21 +202,37 @@ public class OpenVPNFlutterPlugin implements FlutterPlugin, ActivityAware {
 
     @Override
     public void onAttachedToActivity(@NonNull ActivityPluginBinding binding) {
+        activityBinding = binding;
         activity = binding.getActivity();
+        binding.addActivityResultListener(activityResultListener);
     }
 
     @Override
     public void onDetachedFromActivityForConfigChanges() {
-
+        detachActivity();
     }
 
     @Override
     public void onReattachedToActivityForConfigChanges(@NonNull ActivityPluginBinding binding) {
+        activityBinding = binding;
         activity = binding.getActivity();
+        binding.addActivityResultListener(activityResultListener);
     }
 
     @Override
     public void onDetachedFromActivity() {
+        detachActivity();
+    }
 
+    private void detachActivity() {
+        if (activityBinding != null) {
+            activityBinding.removeActivityResultListener(activityResultListener);
+            activityBinding = null;
+        }
+        if (pendingPermissionResult != null) {
+            pendingPermissionResult.error("-5", "Activity detached before OpenVPN permission result", "");
+            pendingPermissionResult = null;
+        }
+        activity = null;
     }
 }
